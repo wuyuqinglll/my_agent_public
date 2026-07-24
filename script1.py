@@ -1,4 +1,4 @@
-# 流式+Gradio 本地对话页
+# 非流式 + Gradio 本地对话页
 import time
 import os
 from pathlib import Path
@@ -24,11 +24,9 @@ client = OpenAI(api_key=api_key, base_url=base_url,timeout=60)
 SYSTEM = "你是助手"
 
 def respond(message: str, history: list):
-    # 流式输出
     text = (message or "").strip()
     if not text:
-        yield "请先输入内容。"
-        return
+        return "请先输入内容。"
     # 每次都从system规矩开始
     messages = [{"role":"system", "content":SYSTEM}]
     # -------------------------------------------------------
@@ -58,28 +56,15 @@ def respond(message: str, history: list):
     # （循环结束后还要）追加本轮用户输入
     messages.append({"role":"user", "content":text})
 
-    # 重试壳+调用
+    # 重试壳+调用（非流式：一次拿完整回复）
     for attempt in range(1, 4):
-        # chunks: list[str] = []
-        full = ""
         try:
-            stream = client.chat.completions.create(  # type: ignore
+            resp = client.chat.completions.create(  # type: ignore
                 model="deepseek-chat",
                 messages=messages,
                 temperature=0.3,
-                stream=True,
             )
-            for event in stream:
-                piece = event.choices[0].delta.content or ""
-                if not piece:
-                    continue
-                full += piece
-                yield full # 每来一块就更新页面（流式关键
-            return
-                # print(piece, end="", flush=True)  # 给用户看
-                # chunks.append(piece)  # 自己攒着
-            # full = "".join(chunks).strip() # 拼完整串
-            # break  # 成功：离开重试循环
+            return (resp.choices[0].message.content or "").strip()
         except Exception as e:
             # 当场判断可不可以重试（不另写函数）
             if isinstance(e, AuthenticationError):
@@ -91,8 +76,7 @@ def respond(message: str, history: list):
             print(f"第{attempt}次失败 ｜{type(e).__name__}| 可重试={'是'if retryable else '否'}")
 
             if(not retryable) or attempt == 3:
-                yield f"调用失败：{type(e).__name__}。（详情见终端）"
-                return # 不可重试，或者已经第三次 --》停
+                return f"调用失败：{type(e).__name__}。（详情见终端）"
 
             sleep_s = 0.5*(2**(attempt-1))
             print(f" 等{sleep_s}s 再试")
@@ -104,4 +88,4 @@ gr.ChatInterface(
     title = "mini_agent",
     description = "Agent's first attempt",
     examples = ["用一句话解释什么是 timeout", "pong", "为什么 API 常用 JSON？"],
-).launch(server_name = "127.0.0.1", server_port = 8888, share = False)
+).launch(server_name = "127.0.0.1", server_port = 8887, share = False)

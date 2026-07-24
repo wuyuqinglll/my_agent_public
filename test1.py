@@ -1,4 +1,4 @@
-# 流式+Gradio 本地对话页
+# 流式+对话历史与上下文控制
 import time
 import os
 from pathlib import Path
@@ -22,6 +22,7 @@ base_url = os.getenv("BASE_URL")
 # 1.连上服务
 client = OpenAI(api_key=api_key, base_url=base_url,timeout=60)
 SYSTEM = "你是助手"
+KEEP_ROUNDS = 6  # 保留最近几轮；一轮 = user + assistant
 
 def respond(message: str, history: list):
     # 流式输出
@@ -29,34 +30,56 @@ def respond(message: str, history: list):
     if not text:
         yield "请先输入内容。"
         return
-    # 每次都从system规矩开始
-    messages = [{"role":"system", "content":SYSTEM}]
     # -------------------------------------------------------
     # 把 Gradio 的 history 转成 OpenAI 的 messages
     # Gradio4：history = [[用户话, 助手话], [用户话, 助手话], ...]
     # Gradio5：history = [{"role":"user","content":"..."}, {"role":"assistant",...}, ...]
     # history 一般「不含本轮刚输入」；本轮 text 要在循环后再单独 append
     # -------------------------------------------------------
+    # 先把gradio history 收成完整轮次（user + assistant）
+    pairs = []
+    pending_user = None
     for item in history or []:
         if isinstance(item, dict):
             # —— Gradio5：每一项已经是一条消息 ——
             role = item.get("role")
             content = item.get("content")
             # 只收合法角色;content必须为非空字符串
-            if role in ("user", "assistant") and isinstance(content, str) and content:
-                # 原样追加（保留历史自己的role，不要全写成user）
-                messages.append({"role":role, "content":content})
-
+            if role not in ("user", "assistant") or not isinstance(content, str) or not content:
+                continue
+            msg = {"role":role, "content":content}
+            if role == "user":
+                pending_user = msg
+            elif role == "assistant" and pending_user is not None:
+                pairs.append((pending_user, msg))
+                pending_user = None
+        #  兼容Gradio 旧版（4.x） 的 history 格式
         elif isinstance(item, (list, tuple)) and len(item) >= 1:
             user_text = item[0] or "" # 第0个 = 用户
             bot_text = item[1] if len(item) > 1 else None # 第1个 = 助手（可能还没有）
-            if user_text:
-                messages.append({"role":"user", "content":str(user_text)})
-            if bot_text:
-                messages.append({"role":"assistant", "content":str(bot_text)})
+            if user_text and bot_text:
+                pairs.append((
+                    {"role":"user", "content":str(user_text)},
+                    {"role":"assistant", "content":str(bot_text)}
+                ))
+    # 只保留最近N轮
+    kept = pairs[-KEEP_ROUNDS:] if KEEP_ROUNDS > 0 else []
+    dropped = (len(pairs) - len(kept)) * 2
 
-    # （循环结束后还要）追加本轮用户输入
+    # 拼最终 messages:system +保留轮 + 本轮
+    messages = [{"role":"system", "content":SYSTEM}]
+    for u,a in kept:
+        messages.append(u)
+        messages.append(a)
+    if pending_user is not None:
+        messages.append(pending_user)
     messages.append({"role":"user", "content":text})
+
+    chars = sum(len(m["content"]) for m in messages)
+    print(
+        f"[ctx] msgs={len(messages)} kept{len(kept)}",
+        f"dropped={dropped} chars={chars}={chars // 4}",
+    )
 
     # 重试壳+调用
     for attempt in range(1, 4):
@@ -104,4 +127,4 @@ gr.ChatInterface(
     title = "mini_agent",
     description = "Agent's first attempt",
     examples = ["用一句话解释什么是 timeout", "pong", "为什么 API 常用 JSON？"],
-).launch(server_name = "127.0.0.1", server_port = 8888, share = False)
+).launch(server_name = "127.0.0.1", server_port = 8889, share = False)
